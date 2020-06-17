@@ -10,24 +10,12 @@
 #include "rtc.h"
 
 #define MAJOR_VERSION (0x00)
-#define MINOR_VERSION (0x01)
+#define MINOR_VERSION (0x00)
 #define DEBUG_VERSION (0x00)
 #define MENU_VERSION ((MAJOR_VERSION << 16) | (MINOR_VERSION << 8) | DEBUG_VERSION)
 
-#define u8 unsigned char
-#define u16 unsigned short
-#define u32 unsigned long
-#define u64 unsigned long long
-
-#define vu8 volatile unsigned char
-#define vu16 volatile unsigned short
-#define vu32 volatile unsigned long
-#define vu64 volatile unsigned long long
-
-#define s8 signed char
-#define s16 short
-#define s32 long
-#define s64 long long
+typedef volatile uint32_t vu32;
+typedef volatile uint64_t vu64;
 
 //boot simulation
 #define PI_STATUS_REG *(vu32*)(0xA4600010)
@@ -124,17 +112,13 @@ const int _CursorAnimationAlpha[] = { 10, 10, 11, 13, 16, 19, 23, 28,
     109, 110, 109, 108, 106, 103, 100, 96, 91, 86, 81, 75, 69, 63, 56, 
     50, 44, 38, 33, 28, 23, 19, 16, 13, 11, 10, 10 };
 
-typedef volatile uint64_t sim_vu64;
-typedef unsigned int sim_u32;
-typedef uint64_t sim_u64;
-
 struct CartHeader_st {
-    u32 InitialPiLat;
-    u32 ClockRate;
-    u32 EntryPoint;
-    u32 Release;
-    u32 Crc1;
-    u32 Crc2;
+    uint32_t InitialPiLat;
+    uint32_t ClockRate;
+    uint32_t EntryPoint;
+    uint32_t Release;
+    uint32_t Crc1;
+    uint32_t Crc2;
     char __RESERVED1[8];
     char ImageName[20];
     char __RESERVED2[7];
@@ -170,17 +154,20 @@ void PrepareReset(void)
     }
 }
 
+// THX to saturnu for providing this tutorial:
+// https://circuit-board.de/forum/index.php/Thread/8939-N64-und-ED64-Programme-erstellen/
+
 // Simulated PIF ROM bootcode adapted from DaedalusX64 emulator
-void simulate_pif_boot(sim_u32 cic_chip, uint8_t tv)
+void simulate_pif_boot(uint32_t cic_chip, uint8_t tv)
 {
     const uint16_t CicSeeds[] = {
         0x3f3f, 0x3f3f, 0x3f3f, 0x7878, 0x9191, 0x8585, 0
     };
     unsigned int gBootCic = E_CICTYPE_6102; //added
 
-    sim_u32 ix, sz;
+    uint32_t ix, sz;
     vu32 *src, *dst;
-    sim_vu64 *gGPR = (sim_vu64 *) 0xA0080000;
+    vu64 *gGPR = (vu64 *) 0xA0080000;
     
     //char country = tv ? 'P' : 'E';
 
@@ -236,7 +223,12 @@ void simulate_pif_boot(sim_u32 cic_chip, uint8_t tv)
     gGPR[18] = 0; // s2
     gGPR[19] = 0; // s3
     gGPR[20] = 0; // s4
-    gGPR[21] = 0; // s5
+    gGPR[21] = 1; // s5 0: Cold Reset, 1: Reset Button
+                  // this fixes BattleTanx / BattleTanx GA from not booting (maybe more games)
+                  // the flag would normally be set when the reset comes through the reset button
+                  // hopefully this change doesn't introduce other bugs
+                  // maybe there is another fix for this (?)
+    
     gGPR[22] = 0; // s6
     gGPR[23] = 0; // s7
     gGPR[24] = 0;
@@ -640,7 +632,7 @@ void start_game(int8_t tv, uint8_t cic, uint8_t save)
 {
     cart_set_savetype(save);
     
-    *(u32 *) TV_TYPE_LOC = tv;
+    *(uint32_t *) TV_TYPE_LOC = tv;
     disable_interrupts();
     PrepareReset();
     simulate_pif_boot(cic, tv);
@@ -676,7 +668,7 @@ int main(void)
     /* enable interrupts (on the CPU) */
     init_interrupts();
     
-    s64 tick = 0;
+    int64_t tick = 0;
     uint8_t blink = 0;
     uint8_t fpga_version[4];
     uint32_t tmp;
@@ -833,7 +825,7 @@ int main(void)
     bootCodeCrc = CRC_Calculate(&cartData[16], 4032);
     
     /* Initialize peripherals */
-    //*(u32 *) TV_TYPE_LOC = TV_NTSC;
+    //*(uint32_t *) TV_TYPE_LOC = TV_NTSC;
     display_init( RESOLUTION_320x240, DEPTH_32_BPP, 2, GAMMA_NONE, ANTIALIAS_RESAMPLE );
     timer_init();
     
