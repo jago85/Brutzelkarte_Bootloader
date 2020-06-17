@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include "crc32.h"
 #include "rtc.h"
+#include "ini.h"
 
 #define MAJOR_VERSION (0x00)
 #define MINOR_VERSION (0x00)
@@ -38,9 +39,9 @@ typedef volatile uint64_t vu64;
 
 #define CART_CONTROL_REG        (0x18000000)
 #define CART_VERSION_REG        (0x18000004)
-#define CART_ROM_OFFSET_REG     (0x18000008)
 #define CART_SAVE_OFFSET_REG    (0x1800000C)
 #define CART_BACKUP_REG         (0x18000010)
+#define CART_MAPPING0_REG       (0x18000080)
 
 enum cictype
 {
@@ -73,9 +74,12 @@ struct rom_config_st
     int8_t tv;
     uint8_t cic;
     uint8_t save;
-    uint8_t rom_offset;
     uint8_t save_offset;
-} __attribute__ ((packed));
+    uint32_t rom_size;
+    uint32_t rom_crc;
+    uint8_t mapping_regs[32];
+
+};
 
 struct cart_config_st
 {
@@ -393,6 +397,29 @@ const char * get_cic_str(int cic)
     return res;
 }
 
+enum cictype get_cic_from_str(const char * str)
+{
+    if (str == NULL)
+        return E_CICTYPE_UNKNOWN;
+    
+    if (strcmp(str, "6101") == 0)
+        return E_CICTYPE_6101;
+    
+    if (strcmp(str, "6102") == 0)
+        return E_CICTYPE_6102;
+    
+    if (strcmp(str, "6103") == 0)
+        return E_CICTYPE_6103;
+    
+    if (strcmp(str, "6105") == 0)
+        return E_CICTYPE_6105;
+    
+    if (strcmp(str, "6106") == 0)
+        return E_CICTYPE_6106;
+    
+    return E_CICTYPE_UNKNOWN;
+}
+
 int8_t get_tv_type(char id)
 {
     int res;
@@ -478,6 +505,32 @@ const char * get_savetype_str(enum savetype save)
     return res;
 }
 
+enum savetype get_savetype_from_str(const char * str)
+{
+    if (str == NULL)
+        return E_SAVETYPE_UNKNOWN;
+    
+    if (strcmp(str, "OFF") == 0)
+        return E_SAVETYPE_NONE;
+    
+    if (strcmp(str, "EEP4K") == 0)
+        return E_SAVETYPE_EEP4K;
+    
+    if (strcmp(str, "EEP16K") == 0)
+        return E_SAVETYPE_EEP16K;
+    
+    if (strcmp(str, "SRAM32") == 0)
+        return E_SAVETYPE_SRAM32;
+    
+    if (strcmp(str, "SRAM32x3") == 0)
+        return E_SAVETYPE_SRAM32x3;
+    
+    if (strcmp(str, "FLASHRAM") == 0)
+        return E_SAVETYPE_FLASH;
+        
+    return E_SAVETYPE_UNKNOWN;
+}
+
 void cart_set_savetype(enum savetype save)
 {
     uint32_t reg;
@@ -527,9 +580,29 @@ void cart_enable_gamerom(bool is_enabled)
     io_write(CART_CONTROL_REG, reg);
 }
 
-void cart_set_rom_offset(uint8_t offset)
+void cart_enable_mapping(bool is_enabled)
 {
-    io_write(CART_ROM_OFFSET_REG, offset);
+    uint32_t reg;
+    
+    reg = io_read(CART_CONTROL_REG);
+    
+    reg &= ~0x20;
+    
+    if (is_enabled)
+    {
+        reg |= 0x20;
+    }
+    
+    io_write(CART_CONTROL_REG, reg);
+}
+
+void cart_set_mapping(uint8_t * regs)
+{
+    if (regs)
+    {
+        for (int i = 0; i < 32; i++)
+            io_write(CART_MAPPING0_REG + i * sizeof(uint32_t), regs[i]);
+    }
 }
 
 void cart_set_save_offset(uint8_t offset)
@@ -628,10 +701,8 @@ void menu_process_keys(struct menu_st *menu)
     }
 }
 
-void start_game(int8_t tv, uint8_t cic, uint8_t save)
+void start_game(int8_t tv, uint8_t cic)
 {
-    cart_set_savetype(save);
-    
     *(uint32_t *) TV_TYPE_LOC = tv;
     disable_interrupts();
     PrepareReset();
@@ -642,17 +713,163 @@ void save_backup_data(struct menu_st *menu)
 {
     // Format
     // (high) unused:8 
+    //        selected index:8
     //        save_offset:8 
-    //        unused:2 rom_offset:6 
     // (low)  save_type:3 cic:3 tv:1 valid:1
     uint32_t tmp = 1;
     tmp |= (menu->selected_config.tv & 0x01) << 1;
     tmp |= (menu->selected_config.cic & 0x07) << 2;
     tmp |= (menu->selected_config.save & 0x07) << 5;
-    tmp |= (menu->selected_config.rom_offset & 0x3f) << 8;
-    tmp |= menu->selected_config.save_offset << 16;
-    tmp |= menu->selected_index << 24;
+    tmp |= menu->selected_config.save_offset << 8;
+    tmp |= menu->selected_index << 16;
     cart_set_backup(tmp);
+}
+
+void load_config(struct menu_st * menu)
+{
+    int dfsStatus = dfs_init(0xB0200000);
+    if(dfsStatus == DFS_ESUCCESS)
+    {
+        ini_t *ini = ini_load("rom://brutzelkarte/config.ini");
+        if (ini)
+        {
+            bool has_error = false;
+            // this loop is just to have a breakpoint
+            do
+            {
+                const char *tmp_str = ini_get(ini, "CART", "NUM_ROMS");
+                if (tmp_str == NULL)
+                    break;
+                uint8_t num_roms = atoi(tmp_str);
+                
+                tmp_str = ini_get(ini, "CART", "AUTOBOOT");
+                if (tmp_str == NULL)
+                    break;
+                int8_t autoboot_index = atoi(tmp_str);
+                
+                menu->cart_config.rom_configs = (struct rom_config_st *)calloc(num_roms, sizeof(struct rom_config_st));
+                if (menu->cart_config.rom_configs == NULL)
+                    break;
+                
+                for (int i = 0; i < num_roms; i++)
+                {
+                    menu->cart_config.rom_configs[i].tv = -1;
+                    struct rom_config_st tmp_cfg;
+                    
+                    char rom_index[10];
+                    sprintf(rom_index, "ROM%d", i);
+                    
+                    tmp_str = ini_get(ini, rom_index, "ID");
+                    
+                    // allow ID to be empty
+                    if (tmp_str == NULL)
+                    {
+                        memset(tmp_cfg.id, 0, sizeof(tmp_cfg.id));
+                    }
+                    else
+                    {
+                        strncpy(tmp_cfg.id, tmp_str, sizeof(tmp_cfg.id) - 1);
+                    }
+                    
+                    tmp_str = ini_get(ini, rom_index, "NAME");
+                    
+                    // allow NAME to be empty
+                    if (tmp_str == NULL)
+                    {
+                        memset(tmp_cfg.name, 0, sizeof(tmp_cfg.name));
+                    }
+                    else
+                    {
+                        strncpy(tmp_cfg.name, tmp_str, sizeof(tmp_cfg.name) - 1);
+                    }
+                    
+                    tmp_str = ini_get(ini, rom_index, "TV");
+                    if (tmp_str == NULL)
+                    {
+                        has_error = true;
+                        break;
+                    }
+                    if (strcmp(tmp_str, "PAL") == 0)
+                        tmp_cfg.tv = TV_PAL;
+                    else
+                        tmp_cfg.tv = TV_NTSC;
+                    
+                    tmp_str = ini_get(ini, rom_index, "CIC");
+                    if (tmp_str == NULL)
+                    {
+                        has_error = true;
+                        break;
+                    }
+                    tmp_cfg.cic = get_cic_from_str(tmp_str);
+                    
+                    tmp_str = ini_get(ini, rom_index, "SAVE");
+                    if (tmp_str == NULL)
+                    {
+                        has_error = true;
+                        break;
+                    }
+                    tmp_cfg.save = get_savetype_from_str(tmp_str);
+                    
+                    tmp_str = ini_get(ini, rom_index, "SAVE_OFFSET");
+                    if (tmp_str == NULL)
+                    {
+                        has_error = true;
+                        break;
+                    }
+                    tmp_cfg.save_offset = atoi(tmp_str);
+                    
+                    tmp_str = ini_get(ini, rom_index, "ROM_SIZE");
+                    if (tmp_str == NULL)
+                    {
+                        has_error = true;
+                        break;
+                    }
+                    tmp_cfg.rom_size = atoi(tmp_str);
+                    
+                    tmp_str = ini_get(ini, rom_index, "ROM_CRC");
+                    if (tmp_str == NULL)
+                    {
+                        has_error = true;
+                        break;
+                    }
+                    tmp_cfg.rom_crc = strtol(tmp_str, NULL, 16);
+                    
+                    // read the mapping registers
+                    for (int map = 0; map < 32; map++)
+                    {
+                        char map_index[12];
+                        sprintf(map_index, "MAPPING%d", map);
+                        
+                        tmp_str = ini_get(ini, rom_index, map_index);
+                        if (tmp_str == NULL)
+                        {
+                            has_error = true;
+                            break;
+                        }
+                        tmp_cfg.mapping_regs[map] = atoi(tmp_str);
+                    }
+                    
+                    // error in loop?
+                    if (has_error)
+                    {
+                        break;
+                    }
+                    
+                    // Config for this rom complete - add to menu
+                    menu->cart_config.rom_configs[i] = tmp_cfg;
+                    menu->cart_config.num_roms++;
+                }
+                
+                if (has_error)
+                    break;
+                
+                menu->cart_config.autoboot_index = autoboot_index;
+            }
+            while (0);
+            
+            ini_free(ini);
+        }
+    }
 }
 
 int main(void)
@@ -663,7 +880,7 @@ int main(void)
     uint32_t cartData[4096/4];
     uint32_t bootCodeCrc = 0;
     
-    char sStr[40];
+    char sStr[64];
     
     /* enable interrupts (on the CPU) */
     init_interrupts();
@@ -689,7 +906,7 @@ int main(void)
     uint32_t cart_backup = cart_get_backup();
     if (cart_backup & 1)
     {
-        menu.selected_index = (int8_t)((cart_backup >> 24) & 0xff);
+        menu.selected_index = (int8_t)((cart_backup >> 16) & 0xff);
         
         // autostart the game
         // (can be interrupted by holding Z)
@@ -701,12 +918,12 @@ int main(void)
             int8_t tv = (cart_backup >> 1) & 0x01;
             uint8_t cic = (cart_backup >> 2) & 0x07;
             uint8_t save = (cart_backup >> 5) & 0x07;
-            uint8_t rom_offset = (cart_backup >> 8) & 0x3f;
-            uint8_t save_offset = (cart_backup >> 16);
-            cart_set_rom_offset(rom_offset);
+            uint8_t save_offset = (cart_backup >> 8);
             cart_set_save_offset(save_offset);
+            cart_set_savetype(save);
             cart_enable_gamerom(true);
-            start_game(tv, cic, save);
+            cart_enable_mapping(true);
+            start_game(tv, cic);
             
             // should not get here
             while (1) ;
@@ -718,44 +935,7 @@ int main(void)
         }
     }
     
-    int dfsStatus = dfs_init(0xB0200000);
-    if(dfsStatus == DFS_ESUCCESS)
-    {
-        FILE *fp = fopen("rom://brutzelkarte/config", "r");
-        if (fp != NULL)
-        {
-            // this loop is just to have a breakpoint
-            do
-            {
-                uint8_t num_roms;
-                int nbytes = fread(&num_roms, 1, 1, fp);
-                if (nbytes != 1)
-                    break;
-                int8_t autoboot_index;
-                nbytes = fread(&autoboot_index, 1, 1, fp);
-                if (nbytes != 1)
-                    break;
-                menu.cart_config.rom_configs = (struct rom_config_st *)calloc(num_roms, sizeof(struct rom_config_st));
-                if (menu.cart_config.rom_configs == NULL)
-                    break;
-                
-                for (int i = 0; i < num_roms; i++)
-                {
-                    menu.cart_config.rom_configs[i].tv = -1;
-                    struct rom_config_st tmp_cfg;
-                    nbytes = fread(&tmp_cfg, sizeof(struct rom_config_st), 1, fp);
-                    if (nbytes == 1)
-                    {
-                        menu.cart_config.rom_configs[i] = tmp_cfg;
-                        menu.cart_config.num_roms++;
-                    }
-                }
-                menu.cart_config.autoboot_index = autoboot_index;
-            }
-            while (0);
-            fclose(fp);
-        }
-    }
+    load_config(&menu);
     
     if ((menu.cart_config.autoboot_index >= 0) && (menu.cart_config.num_roms > menu.cart_config.autoboot_index))
     {
@@ -776,16 +956,16 @@ int main(void)
             menu.cart_config.num_roms = 1;
         }
     }
-
     
     // switch to game
     cart_enable_gamerom(true);
+    cart_enable_mapping(true);
     cartInfo = (struct CartHeader_st *)cartData;
     
     if (menu.cart_config.autoboot_index == menu.selected_index)
     {
         // check if the autoboot config matches the rom id
-        cart_set_rom_offset(menu.selected_config.rom_offset);
+        cart_set_mapping(menu.selected_config.mapping_regs);
         cart_set_save_offset(menu.selected_config.save_offset);
         data_cache_hit_writeback_invalidate(cartData, sizeof(cartData));
         dma_read(cartData, 0, sizeof(cartData));
@@ -803,7 +983,8 @@ int main(void)
                 && (!(menu.keysPressed.c[0].Z)))
             {
                 save_backup_data(&menu);
-                start_game(menu.selected_config.tv, menu.selected_config.cic, menu.selected_config.save);
+                cart_set_savetype(menu.selected_config.save);
+                start_game(menu.selected_config.tv, menu.selected_config.cic);
                 
                 // should not get here
                 while (1) ;
@@ -818,7 +999,7 @@ int main(void)
     menu.selected_config = menu.cart_config.rom_configs[menu.selected_index];
     
     // autoboot not executed -> show menu
-    cart_set_rom_offset(menu.selected_config.rom_offset);
+    cart_set_mapping(menu.selected_config.mapping_regs);
     data_cache_hit_writeback_invalidate(cartData, sizeof(cartData));
     dma_read(cartData, 0, sizeof(cartData));
     data_cache_hit_invalidate(cartData, sizeof(cartData));
@@ -925,7 +1106,7 @@ int main(void)
         if (is_rom_changed)
         {
             menu.selected_config = menu.cart_config.rom_configs[menu.selected_index];
-            cart_set_rom_offset(menu.selected_config.rom_offset);
+            cart_set_mapping(menu.selected_config.mapping_regs);
             cart_set_save_offset(menu.selected_config.save_offset);
             data_cache_hit_writeback_invalidate(cartData, sizeof(cartData));
             dma_read(cartData, 0, sizeof(cartData));
@@ -977,6 +1158,10 @@ int main(void)
         }
         
         sprintf(sStr, "  CFG: %s", menu.selected_config.name);
+        if (strlen(sStr) > 37)
+        {
+            strcpy(&sStr[34], "...");
+        }
         graphics_draw_text( menu.disp, 20, 80, sStr );
         
         int8_t cart_tv = get_tv_type(cartInfo->CartridgeId[3]);
@@ -1052,8 +1237,6 @@ int main(void)
         sprintf(sStr, "Backup : %08X", (unsigned int)cart_backup);
         graphics_draw_text( menu.disp, 20, 170, sStr );
         
-        sprintf(sStr, "ROM offset : %d", menu.selected_config.rom_offset);
-        graphics_draw_text( menu.disp, 20, 180, sStr );
         sprintf(sStr, "SAVE offset: %d", menu.selected_config.save_offset);
         graphics_draw_text( menu.disp, 20, 190, sStr );
         
@@ -1084,7 +1267,8 @@ int main(void)
             && (menu.selected_config.tv >= 0))
         {
             save_backup_data(&menu);
-            start_game(menu.selected_config.tv, menu.selected_config.cic, menu.selected_config.save);
+            cart_set_savetype(menu.selected_config.save);
+            start_game(menu.selected_config.tv, menu.selected_config.cic);
             
             // should not get here
             while (1) ;
