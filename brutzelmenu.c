@@ -227,11 +227,13 @@ void simulate_pif_boot(uint32_t cic_chip, uint8_t tv)
     gGPR[18] = 0; // s2
     gGPR[19] = 0; // s3
     gGPR[20] = 0; // s4
-    gGPR[21] = 1; // s5 0: Cold Reset, 1: Reset Button
+    gGPR[21] = 0; // s5 0: Cold Reset, 1: Reset Button
                   // this fixes BattleTanx / BattleTanx GA from not booting (maybe more games)
                   // the flag would normally be set when the reset comes through the reset button
                   // hopefully this change doesn't introduce other bugs
                   // maybe there is another fix for this (?)
+                  // ATTENTION!!!
+                  // Setting this flag to 1 prevents Perfect Dark from detecting the Expansion Pak
     
     gGPR[22] = 0; // s6
     gGPR[23] = 0; // s7
