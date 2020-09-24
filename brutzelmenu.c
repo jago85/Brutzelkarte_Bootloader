@@ -1000,6 +1000,7 @@ int main(void)
     
     // autoboot not executed -> show menu
     cart_set_mapping(menu.selected_config.mapping_regs);
+    cart_set_save_offset(menu.selected_config.save_offset);
     data_cache_hit_writeback_invalidate(cartData, sizeof(cartData));
     dma_read(cartData, 0, sizeof(cartData));
     data_cache_hit_invalidate(cartData, sizeof(cartData));
