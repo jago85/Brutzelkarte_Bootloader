@@ -11,7 +11,7 @@
 #include "ini.h"
 
 #define MAJOR_VERSION (0x00)
-#define MINOR_VERSION (0x00)
+#define MINOR_VERSION (0x02)
 #define DEBUG_VERSION (0x00)
 #define MENU_VERSION ((MAJOR_VERSION << 16) | (MINOR_VERSION << 8) | DEBUG_VERSION)
 
@@ -106,6 +106,8 @@ struct menu_st
     struct cart_config_st cart_config;
     int8_t selected_index;
     struct rom_config_st selected_config;
+    bool is_crc_checked;
+    uint32_t rom_crc;
     
     struct controller_data keysDown;
     struct controller_data keysPressed;
@@ -161,16 +163,17 @@ void PrepareReset(void)
 // THX to saturnu for providing this tutorial:
 // https://circuit-board.de/forum/index.php/Thread/8939-N64-und-ED64-Programme-erstellen/
 
+const uint16_t _CicSeeds[] = {
+	0x3f3f, 0x3f3f, 0x3f3f, 0x7878, 0x9191, 0x8585, 0xDDDD, 0
+};
+
 // Simulated PIF ROM bootcode adapted from DaedalusX64 emulator
 void simulate_pif_boot(uint32_t cic_chip, uint8_t tv)
 {
-    const uint16_t CicSeeds[] = {
-        0x3f3f, 0x3f3f, 0x3f3f, 0x7878, 0x9191, 0x8585, 0
-    };
     unsigned int gBootCic = E_CICTYPE_6102; //added
 
     uint32_t ix, sz;
-    vu32 *src, *dst;
+    vu32 *dst;
     vu64 *gGPR = (vu64 *) 0xA0080000;
     
     //char country = tv ? 'P' : 'E';
@@ -198,10 +201,9 @@ void simulate_pif_boot(uint32_t cic_chip, uint8_t tv)
         dst[ix] = 0;
     
 // Copy low 0x1000 bytes to DMEM
-    src = (vu32 *) 0xB0000000;
     dst = (vu32 *) 0xA4000000;
     for (ix = 0; ix < (0x1000 >> 2); ix++)
-        dst[ix] = src[ix];
+        dst[ix] = io_read(0xB0000000 + (ix << 2));
 
 // Need to copy crap to IMEM for CIC-6105 boot.
     dst = (vu32 *) 0xA4001000;
@@ -228,13 +230,6 @@ void simulate_pif_boot(uint32_t cic_chip, uint8_t tv)
     gGPR[19] = 0; // s3
     gGPR[20] = 0; // s4
     gGPR[21] = 0; // s5 0: Cold Reset, 1: Reset Button
-                  // this fixes BattleTanx / BattleTanx GA from not booting (maybe more games)
-                  // the flag would normally be set when the reset comes through the reset button
-                  // hopefully this change doesn't introduce other bugs
-                  // maybe there is another fix for this (?)
-                  // ATTENTION!!!
-                  // Setting this flag to 1 prevents Perfect Dark from detecting the Expansion Pak
-    
     gGPR[22] = 0; // s6
     gGPR[23] = 0; // s7
     gGPR[24] = 0;
@@ -247,7 +242,7 @@ void simulate_pif_boot(uint32_t cic_chip, uint8_t tv)
     gGPR[31] = 0; // ra
     
     gGPR[11] = 0xFFFFFFFFA4000040LL; // t3
-    gGPR[22] = CicSeeds[cic_chip] >> 8; // s6
+    gGPR[22] = _CicSeeds[cic_chip] >> 8; // s6
     gGPR[29] = 0xFFFFFFFFA4001FF0LL; // sp
     if (tv == 0) // PAL
     {
@@ -269,6 +264,21 @@ void simulate_pif_boot(uint32_t cic_chip, uint8_t tv)
     dst[0x14 >> 2] = 0x3C0DBFC0;
     dst[0x18 >> 2] = 0x8DA80024;
     dst[0x1C >> 2] = 0x3C0BB000;
+    
+    // read ROM ID from Cart Header (was copied to DMEM before)
+    uint16_t romId = (uint16_t)(*(vu32 *)0xA400003C >> 16);
+    
+    switch (romId)
+    {
+    case 0x4258: // 'BX' => BattleTanx
+    case 0x4251: // 'BQ' => BattleTanx GA
+		// BattleTanx will not boot otherwise
+        PI_BSD_DOM1_LAT_REG = 0x80;
+        PI_BSD_DOM1_RLS_REG = 0x37;
+        PI_BSD_DOM1_PWD_REG = 0x12;
+        PI_BSD_DOM1_PGS_REG = 0x40;
+            break;
+    }
     
     // set HW registers
     PI_STATUS_REG = 3;
@@ -422,7 +432,7 @@ enum cictype get_cic_from_str(const char * str)
     return E_CICTYPE_UNKNOWN;
 }
 
-int8_t get_tv_type(char id)
+int8_t get_tv_type_by_id(char id)
 {
     int res;
     
@@ -834,7 +844,7 @@ void load_config(struct menu_st * menu)
                         has_error = true;
                         break;
                     }
-                    tmp_cfg.rom_crc = strtol(tmp_str, NULL, 16);
+                    tmp_cfg.rom_crc = strtoul(tmp_str, NULL, 16);
                     
                     // read the mapping registers
                     for (int map = 0; map < 32; map++)
@@ -1106,6 +1116,28 @@ int main(void)
             }
         }
         
+        if (menu.keysDown.c[0].L)
+        {
+			uint8_t crc_buffer[4096];
+			CRC_Initialize(&menu.rom_crc);
+			uint32_t read_pos = 0;
+			
+			while (read_pos < menu.selected_config.rom_size)
+			{
+				uint32_t part = sizeof(crc_buffer);
+				if (part > menu.selected_config.rom_size - read_pos)
+					part = menu.selected_config.rom_size - read_pos;
+				data_cache_hit_writeback_invalidate(crc_buffer, sizeof(crc_buffer));
+				dma_read(crc_buffer, read_pos, part);
+				data_cache_hit_invalidate(crc_buffer, sizeof(crc_buffer));
+				
+				CRC_CalculateCont(&menu.rom_crc, crc_buffer, part);
+				read_pos += part;
+			}
+			CRC_Finalize(&menu.rom_crc);
+			menu.is_crc_checked = true;
+		}
+        
         if (is_rom_changed)
         {
             menu.selected_config = menu.cart_config.rom_configs[menu.selected_index];
@@ -1115,6 +1147,7 @@ int main(void)
             dma_read(cartData, 0, sizeof(cartData));
             data_cache_hit_invalidate(cartData, sizeof(cartData));
             bootCodeCrc = CRC_Calculate(&cartData[16], 4032);
+            menu.is_crc_checked = false;
         }
         
         if (timer_ticks() - tick > TIMER_TICKS(500000))
@@ -1167,7 +1200,7 @@ int main(void)
         }
         graphics_draw_text( menu.disp, 20, 80, sStr );
         
-        int8_t cart_tv = get_tv_type(cartInfo->CartridgeId[3]);
+        int8_t cart_tv = get_tv_type_by_id(cartInfo->CartridgeId[3]);
         if (cart_tv < 0)
         {
             // unknown TV -> yellow
@@ -1238,7 +1271,22 @@ int main(void)
         }
         
         sprintf(sStr, "Backup : %08X", (unsigned int)cart_backup);
+        graphics_draw_text( menu.disp, 20, 160, sStr );
+        
+        strcpy(sStr, "ROM CRC check : ");
+        if (menu.is_crc_checked)
+        {
+			strcat(sStr, (menu.rom_crc == menu.selected_config.rom_crc) ? "OK" : "FAIL");
+			sprintf(sStr + strlen(sStr), " (%08lX)", menu.rom_crc);
+		}
+        else
+        {
+			strcat(sStr, "Press L to check");
+		}
         graphics_draw_text( menu.disp, 20, 170, sStr );
+        
+        sprintf(sStr, "ROM size: %ld", menu.selected_config.rom_size);
+        graphics_draw_text( menu.disp, 20, 180, sStr );
         
         sprintf(sStr, "SAVE offset: %d", menu.selected_config.save_offset);
         graphics_draw_text( menu.disp, 20, 190, sStr );
