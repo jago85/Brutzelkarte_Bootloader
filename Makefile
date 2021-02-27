@@ -29,8 +29,8 @@ $(PROG_NAME)$(ROM_EXTENSION): $(PROG_NAME).elf
 	$(N64TOOL) -t "Brutzelmenu" $(N64_FLAGS) 
 	$(CHKSUM64PATH) $(PROG_NAME)$(ROM_EXTENSION)
 
-$(PROG_NAME).elf : $(PROG_NAME).o crc32.o rtc.o
-	$(LD) -o $(PROG_NAME).elf $(PROG_NAME).o crc32.o rtc.o $(LINK_FLAGS)
+$(PROG_NAME).elf : $(PROG_NAME).o crc32.o rtc.o ini.o
+	$(LD) -o $(PROG_NAME).elf $(PROG_NAME).o crc32.o rtc.o ini.o $(LINK_FLAGS)
 
 all: $(PROG_NAME)$(ROM_EXTENSION)
 
