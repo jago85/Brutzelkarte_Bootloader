@@ -74,7 +74,7 @@ struct rom_config_st
     int8_t tv;
     uint8_t cic;
     uint8_t save;
-    uint8_t save_offset;
+    uint32_t save_offset;
     uint32_t rom_size;
     uint32_t rom_crc;
     uint8_t mapping_regs[32];
@@ -112,6 +112,17 @@ struct menu_st
     struct controller_data keysDown;
     struct controller_data keysPressed;
 };
+
+struct BackupRegister_st {
+
+    unsigned IsValid : 1;
+    unsigned TvType : 1;
+    unsigned CicType : 3;
+    unsigned SaveType : 3;
+    unsigned SelectedIndex : 8;
+    unsigned SaveOffset : 10;
+
+} __attribute__ ((packed));
 
 const int _CursorAnimationAlpha[] = { 10, 10, 11, 13, 16, 19, 23, 28, 
     33, 38, 44, 50, 56, 63, 69, 75, 81, 86, 91, 96, 100, 103, 106, 108, 
@@ -617,7 +628,7 @@ void cart_set_mapping(uint8_t * regs)
     }
 }
 
-void cart_set_save_offset(uint8_t offset)
+void cart_set_save_offset(uint32_t offset)
 {
     io_write(CART_SAVE_OFFSET_REG, offset);
 }
@@ -723,18 +734,16 @@ void start_game(int8_t tv, uint8_t cic)
 
 void save_backup_data(struct menu_st *menu)
 {
-    // Format
-    // (high) unused:8 
-    //        selected index:8
-    //        save_offset:8 
-    // (low)  save_type:3 cic:3 tv:1 valid:1
-    uint32_t tmp = 1;
-    tmp |= (menu->selected_config.tv & 0x01) << 1;
-    tmp |= (menu->selected_config.cic & 0x07) << 2;
-    tmp |= (menu->selected_config.save & 0x07) << 5;
-    tmp |= menu->selected_config.save_offset << 8;
-    tmp |= menu->selected_index << 16;
-    cart_set_backup(tmp);
+    struct BackupRegister_st backup = { 0 };
+    backup.IsValid = 1;
+    backup.TvType = menu->selected_config.tv;
+    backup.CicType = menu->selected_config.cic;
+    backup.SaveType = menu->selected_config.save;
+    backup.SelectedIndex = menu->selected_index;
+    backup.SaveOffset = menu->selected_config.save_offset;
+
+    void * tmp = &backup;
+    cart_set_backup(*(uint32_t *)tmp);
 }
 
 void load_config(struct menu_st * menu)
@@ -915,10 +924,14 @@ int main(void)
     memcpy(fpga_version, &tmp, 4);
     
     // check the backup register to see if it has valid data
+    struct BackupRegister_st cartBackup;
     uint32_t cart_backup = cart_get_backup();
-    if (cart_backup & 1)
+    void * vpTmp = &cartBackup;
+    *(uint32_t *)vpTmp = cart_backup;
+
+    if (cartBackup.IsValid)
     {
-        menu.selected_index = (int8_t)((cart_backup >> 16) & 0xff);
+        menu.selected_index = cartBackup.SelectedIndex;
         
         // autostart the game
         // (can be interrupted by holding Z)
@@ -927,15 +940,11 @@ int main(void)
         if ((menu.keysPressed.c[0].err == ERROR_NONE)
             && (!(menu.keysPressed.c[0].Z)))
         {
-            int8_t tv = (cart_backup >> 1) & 0x01;
-            uint8_t cic = (cart_backup >> 2) & 0x07;
-            uint8_t save = (cart_backup >> 5) & 0x07;
-            uint8_t save_offset = (cart_backup >> 8);
-            cart_set_save_offset(save_offset);
-            cart_set_savetype(save);
+            cart_set_save_offset(cartBackup.SaveOffset);
+            cart_set_savetype(cartBackup.SaveType);
             cart_enable_gamerom(true);
             cart_enable_mapping(true);
-            start_game(tv, cic);
+            start_game(cartBackup.TvType, cartBackup.CicType);
             
             // should not get here
             while (1) ;
@@ -1288,7 +1297,7 @@ int main(void)
         sprintf(sStr, "ROM size: %ld", menu.selected_config.rom_size);
         graphics_draw_text( menu.disp, 20, 180, sStr );
         
-        sprintf(sStr, "SAVE offset: %d", menu.selected_config.save_offset);
+        sprintf(sStr, "SAVE offset: %ld", menu.selected_config.save_offset);
         graphics_draw_text( menu.disp, 20, 190, sStr );
         
         sprintf(sStr, "Bootcode CRC: %08X", (unsigned int)bootCodeCrc);
