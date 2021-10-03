@@ -114,15 +114,20 @@ struct menu_st
 };
 
 struct BackupRegister_st {
-
     unsigned IsValid : 1;
     unsigned TvType : 1;
     unsigned CicType : 3;
     unsigned SaveType : 3;
     unsigned SelectedIndex : 8;
     unsigned SaveOffset : 10;
-
 } __attribute__ ((packed));
+
+union BackupRegister_un
+{
+    uint32_t val;
+    struct BackupRegister_st str;
+};
+
 
 const int _CursorAnimationAlpha[] = { 10, 10, 11, 13, 16, 19, 23, 28, 
     33, 38, 44, 50, 56, 63, 69, 75, 81, 86, 91, 96, 100, 103, 106, 108, 
@@ -638,9 +643,12 @@ uint32_t cart_get_version(void)
     return io_read(CART_VERSION_REG);
 }
 
-uint32_t cart_get_backup(void)
+struct BackupRegister_st cart_get_backup(void)
 {
-    return io_read(CART_BACKUP_REG);
+    union BackupRegister_un bak;
+
+    bak.val = io_read(CART_BACKUP_REG);
+    return bak.str;
 }
 
 void cart_set_backup(uint32_t value)
@@ -924,11 +932,7 @@ int main(void)
     memcpy(fpga_version, &tmp, 4);
     
     // check the backup register to see if it has valid data
-    struct BackupRegister_st cartBackup;
-    uint32_t cart_backup = cart_get_backup();
-    void * vpTmp = &cartBackup;
-    *(uint32_t *)vpTmp = cart_backup;
-
+    struct BackupRegister_st cartBackup = cart_get_backup();
     if (cartBackup.IsValid)
     {
         menu.selected_index = cartBackup.SelectedIndex;
@@ -1278,9 +1282,6 @@ int main(void)
                 graphics_set_color( 0xFFFFFFFF, 0 );
             }
         }
-        
-        sprintf(sStr, "Backup : %08X", (unsigned int)cart_backup);
-        graphics_draw_text( menu.disp, 20, 160, sStr );
         
         strcpy(sStr, "ROM CRC check : ");
         if (menu.is_crc_checked)
