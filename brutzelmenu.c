@@ -88,6 +88,19 @@ struct cart_config_st
     struct rom_config_st * rom_configs;
 };
 
+struct CartVersion_st {
+    uint8_t Id;
+    uint8_t Major;
+    uint8_t Minor;
+    uint8_t Debug;
+} __attribute__ ((packed));
+
+union CartVersion_un
+{
+    uint32_t val;
+    struct CartVersion_st str;
+};
+
 struct menu_st
 {
     display_context_t disp;
@@ -111,6 +124,9 @@ struct menu_st
     
     struct controller_data keysDown;
     struct controller_data keysPressed;
+
+    struct CartVersion_st CartVersion;
+    
 };
 
 struct BackupRegister_st {
@@ -559,6 +575,24 @@ enum savetype get_savetype_from_str(const char * str)
     return E_SAVETYPE_UNKNOWN;
 }
 
+const char * get_cart_hw_str(uint8_t id)
+{
+    const char * res;
+
+    switch (id)
+    {
+        case 4:
+            res = "1.0";
+            break;
+        case 5:
+            res = "2.0";
+            break;
+        default:
+            res = "???";
+    }
+    return res;
+}
+
 void cart_set_savetype(enum savetype save)
 {
     uint32_t reg;
@@ -638,9 +672,11 @@ void cart_set_save_offset(uint32_t offset)
     io_write(CART_SAVE_OFFSET_REG, offset);
 }
 
-uint32_t cart_get_version(void)
+struct CartVersion_st cart_get_version(void)
 {
-    return io_read(CART_VERSION_REG);
+    union CartVersion_un cartVersion;
+    cartVersion.val = io_read(CART_VERSION_REG);
+    return cartVersion.str;
 }
 
 struct BackupRegister_st cart_get_backup(void)
@@ -916,8 +952,6 @@ int main(void)
     
     int64_t tick = 0;
     uint8_t blink = 0;
-    uint8_t fpga_version[4];
-    uint32_t tmp;
     
     memset(cartData, 0, sizeof(cartData));
     memset(&menu, 0, sizeof(struct menu_st));
@@ -928,7 +962,7 @@ int main(void)
     controller_init();
     
     // read version
-    tmp = cart_get_version();
+    menu.CartVersion = cart_get_version();
     memcpy(fpga_version, &tmp, 4);
     
     // check the backup register to see if it has valid data
@@ -1177,9 +1211,9 @@ int main(void)
         
         sprintf(sStr, "Build = %s %s", __DATE__, __TIME__);
         graphics_draw_text( menu.disp, 20, 15, sStr);
-        sprintf(sStr, "Brutzelmenu V%d.%d.%d / FPGA V%d.%d.%d",
+        sprintf(sStr, "Menu v%d.%d.%d / FPGA [%s] v%d.%d.%d",
             MAJOR_VERSION, MINOR_VERSION, DEBUG_VERSION,
-            fpga_version[1], fpga_version[2], fpga_version[3]);
+            get_cart_hw_str(menu.CartVersion.Id), menu.CartVersion.Major, menu.CartVersion.Minor, menu.CartVersion.Debug);
         graphics_draw_text( menu.disp, 20, 25, sStr);
         graphics_draw_text( menu.disp, 70, 40, "==== Brutzelkarte ====" );
         
