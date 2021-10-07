@@ -144,6 +144,12 @@ union BackupRegister_un
     struct BackupRegister_st str;
 };
 
+// Array with compatible cart versions
+const struct CartVersion_st _SupportedCartVersions[] = {
+    {.Id = 4, .Major = 0, .Minor = 3, .Debug = 0},
+    {.Id = 5, .Major = 0, .Minor = 1, .Debug = 0}
+};
+
 
 const int _CursorAnimationAlpha[] = { 10, 10, 11, 13, 16, 19, 23, 28, 
     33, 38, 44, 50, 56, 63, 69, 75, 81, 86, 91, 96, 100, 103, 106, 108, 
@@ -692,6 +698,66 @@ void cart_set_backup(uint32_t value)
     io_write(CART_BACKUP_REG, value);
 }
 
+// check if there is a version with the found ID and Major version in the array
+// the minor version must be greater or equal to the entry in the array
+bool check_cart_version(const struct CartVersion_st * cartVersion)
+{
+    bool isCompatible = false;
+    for (int i = 0; i < sizeof(_SupportedCartVersions)/sizeof(struct CartVersion_st); i++)
+    {
+        const struct CartVersion_st * cv = &_SupportedCartVersions[i];
+        if ((cartVersion->Id == cv->Id)
+            && ((cartVersion->Major == cv->Major))
+            && (cartVersion->Minor >= cv->Minor))
+        {
+            isCompatible = true;
+            break;
+        }
+    }
+    return isCompatible;
+}
+
+// no return from here
+void show_cart_incompatible(struct menu_st *menu)
+{
+    char sStr[64];
+
+    display_init( RESOLUTION_320x240, DEPTH_32_BPP, 2, GAMMA_NONE, ANTIALIAS_RESAMPLE );
+    timer_init();
+
+    while(1)
+    {
+        
+        /* Grab a render buffer */
+        while( !(menu->disp = display_lock()) );
+        
+        controller_scan();
+
+        /*Fill the screen */
+        graphics_fill_screen( menu->disp, 0 );
+
+        /* Set the text output color */
+        graphics_set_color( 0xFFFFFFFF, 0 );
+        
+        sprintf(sStr, "Build = %s %s", __DATE__, __TIME__);
+        graphics_draw_text( menu->disp, 20, 15, sStr);
+        sprintf(sStr, "Menu v%d.%d.%d / FPGA [%s] v%d.%d.%d",
+            MAJOR_VERSION, MINOR_VERSION, DEBUG_VERSION,
+            get_cart_hw_str(menu->CartVersion.Id), menu->CartVersion.Major, menu->CartVersion.Minor, menu->CartVersion.Debug);
+        graphics_draw_text( menu->disp, 20, 25, sStr);
+        graphics_draw_text( menu->disp, 70, 40, "==== Brutzelkarte ====" );
+        
+        graphics_set_color( 0xFF1010FF, 0 );
+        graphics_draw_text( menu->disp, 40, 90, "The menu is not compatible");
+        graphics_draw_text( menu->disp, 40, 100, "compatible with the FPGA.");
+
+        graphics_set_color( 0xFFFF00FF, 0 );
+        graphics_draw_text( menu->disp, 20, 130, "Please update the FPGA or the menu!");
+
+        display_show(menu->disp);
+    }
+}
+
 void menu_process_keys(struct menu_st *menu)
 {
     menu->cursor_down = false;
@@ -963,7 +1029,10 @@ int main(void)
     
     // read version
     menu.CartVersion = cart_get_version();
-    memcpy(fpga_version, &tmp, 4);
+
+    // check compatibility
+    if (!check_cart_version(&menu.CartVersion))
+        show_cart_incompatible(&menu);
     
     // check the backup register to see if it has valid data
     struct BackupRegister_st cartBackup = cart_get_backup();
